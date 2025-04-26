@@ -1,8 +1,8 @@
-import Spider from './spider';
+import Spider, { SpiderOptions, BootstrapNode, KRPCMessage, RemoteInfo, EnsureHashPayload, SpiderEvents } from './spider';
 
 // Export Spider as default and named export for both ESM and CommonJS
 export default Spider;
-export { Spider };
+export { Spider, SpiderOptions, BootstrapNode, KRPCMessage, RemoteInfo, EnsureHashPayload, SpiderEvents };
 
 // Example usage is commented out but kept for documentation
 /*

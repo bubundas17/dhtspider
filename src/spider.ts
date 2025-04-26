@@ -7,13 +7,13 @@ import { Console } from 'console';
 import crypto from 'crypto';
 
 // Interfaces for configuration and network data
-interface BootstrapNode {
+export interface BootstrapNode {
     address: string;
     port: number;
     dnsFailures?: number; // Track DNS resolution failures
 }
 
-interface SpiderOptions {
+export interface SpiderOptions {
     tableCapacity?: number;
     bootstraps?: BootstrapNode[];
     udpPort?: number;
@@ -26,7 +26,7 @@ interface SpiderOptions {
 }
 
 // Interfaces for KRPC messages (simplified)
-interface KRPCMessage {
+export interface KRPCMessage {
     t: string | Buffer; // Transaction ID
     y: 'q' | 'r' | 'e'; // Message type: query, response, error
     q?: string;          // Query type (for y='q')
@@ -35,21 +35,21 @@ interface KRPCMessage {
     e?: any;             // Error details (for y='e')
 }
 
-interface RemoteInfo {
+export interface RemoteInfo {
     address: string;
     port: number;
     family: 'IPv4' | 'IPv6';
     size: number;
 }
 
-interface EnsureHashPayload {
+export interface EnsureHashPayload {
     address: string;
     port: number;
     version: 1 | 2;
 }
 
 // Type definition for Spider events
-interface SpiderEvents {
+export interface SpiderEvents {
     nodes: (nodes: INode[]) => void;
     unensureHash: (infoHash: string, version: 1 | 2) => void;
     ensureHash: (infoHash: string, payload: EnsureHashPayload) => void;
