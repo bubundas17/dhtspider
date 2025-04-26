@@ -69,7 +69,15 @@ function isInfoHashV2(infohash: Buffer): boolean {
 }
 
 function isValidInfoHash(infohash: Buffer, v1Only: boolean = false): boolean {
-    return isInfoHashV1(infohash) || (!v1Only && isInfoHashV2(infohash));
+    if (!Buffer.isBuffer(infohash)) return false;
+    
+    // Check if it's a v1 infohash (20 bytes)
+    if (infohash.length === 20) return true;
+    
+    // Check if it's a v2 infohash (32 bytes) and v2 is allowed
+    if (infohash.length === 32 && !v1Only) return true;
+    
+    return false;
 }
 
 function generateTid(): string {
@@ -89,6 +97,12 @@ const defaultBootstraps: BootstrapNode[] = [
     { address: 'dht.transmissionbt.com', port: 6881 },
     { address: 'dht.aelitis.com', port: 6881 },
     { address: 'dht.libtorrent.org', port: 25401 },
+    
+    // Known nodes that support BEP-52 (v2 infohashes)
+    { address: 'router.breittorrent.com', port: 6881 },
+    { address: 'router.experimentalbit.com', port: 6881 },
+    { address: 'router.utorrent.com', port: 6881 },
+    { address: 'dht.vuze.com', port: 6881 },
     
     // Commented out unreliable nodes
     // { address: 'dht.bt.bencoded.ninja', port: 6881 },
@@ -118,15 +132,19 @@ export class Spider extends EventEmitter {
     constructor(options: SpiderOptions = {}) {
         super();
         this.debugMode = options.debugMode || false;
-        this.table = new Table(options.tableCapacity || 6000000000, this.debugMode);
+        this.table = new Table(options.tableCapacity || 10000, this.debugMode);
         this.bootstraps = options.bootstraps || defaultBootstraps;
         this.udpPort = options.udpPort || 6339;
         this.token = new Token();
-        this.concurrency = options.concurrency || 50;
+        this.concurrency = options.concurrency || 10;
         this.joinIntervalTime = options.joinIntervalTime || 1000;
-        this.walkIntervalTime = options.walkIntervalTime || 1;
-        this.v1Only = options.v1Only !== undefined ? options.v1Only : true;
+        this.walkIntervalTime = options.walkIntervalTime || 100;
+        this.v1Only = options.v1Only !== undefined ? options.v1Only : false;
         this.disableEnsureHash = options.disableEnsureHash || false;
+        
+        if (this.debugMode && !this.v1Only) {
+            console.log(`[Spider] BEP-52 (v2 infohash) support enabled`);
+        }
     }
 
     // Type overrides for EventEmitter methods for stronger typing
@@ -205,7 +223,8 @@ export class Spider extends EventEmitter {
             q: 'find_node',
             a: {
                 id: id,       // Our node ID or neighbor
-                target: target // Random target ID
+                target: target, // Random target ID
+                v2: 1        // Advertise support for BEP-52 (v2 infohashes)
             }
         };
 
@@ -216,7 +235,7 @@ export class Spider extends EventEmitter {
         this.send(message, address);
     }
 
-    private join(): void {
+    public join(): void {
         if (this.debugMode) console.log(`[Join] Sending find_node to ${this.bootstraps.length} bootstrap nodes`);
         
         // Generate a random target ID for the find_node query
@@ -233,7 +252,8 @@ export class Spider extends EventEmitter {
                 q: 'find_node',
                 a: {
                     id: this.table.id,
-                    target: randomTarget
+                    target: randomTarget,
+                    v2: 1  // Advertise support for BEP-52 (v2 infohashes)
                 }
             };
             
@@ -258,12 +278,6 @@ export class Spider extends EventEmitter {
         // For debugging
         if (this.debugMode) {
             console.log(`[Walk] Table size: ${this.table.size()}`);
-            
-            // If we have a very small routing table after several join attempts,
-            // we might need to log our network state
-            if (this.table.size() < 10) {
-                console.log(`[Warning] Routing table is very small (${this.table.size()} nodes)`);
-            }
         }
 
         if (this.table.size() === 0) {
@@ -280,26 +294,27 @@ export class Spider extends EventEmitter {
         // Log the nodes we're walking
         if (this.debugMode && nodes.length > 0) {
             console.log(`[Walk] Processing ${nodes.length} nodes from table`);
-            nodes.slice(0, 2).forEach((node, idx) => {
-                if (node) {
-                    console.log(`[Walk] Node ${idx}: ${node.address}:${node.port}`);
-                }
-            });
         }
 
         // Use a random infohash to search for more DHT activity
-        // This can help discover more actual infohashes
-        if (this.table.size() > 20 && nodes.length > 0 && Math.random() < 0.1) {
-            // Find a valid node to query
-            for (const potentialNode of nodes) {
-                if (potentialNode && potentialNode.address && isValidPort(potentialNode.port)) {
-                    const randomInfoHash = crypto.randomBytes(20);
-                    this.sendGetPeers(potentialNode, randomInfoHash);
+        // More aggressive v2 querying: 30% chance to send a query with each walk
+        if (this.table.size() > 10 && nodes.length > 0 && Math.random() < 0.3) {  // Increased probability
+            // Find valid nodes to query
+            const validNodes = nodes.filter(node => node && node.address && isValidPort(node.port));
+            const nodesToQuery = Math.min(3, validNodes.length); // Query up to 3 nodes
+            
+            for (let i = 0; i < nodesToQuery; i++) {
+                const node = validNodes[i];
+                if (node) {
+                    // Bias toward v2 queries (75% if enabled)
+                    const isV2Query = !this.v1Only && Math.random() < 0.75;
+                    const randomInfoHash = isV2Query ? crypto.randomBytes(32) : crypto.randomBytes(20);
+                    
+                    this.sendGetPeers(node, randomInfoHash);
                     
                     if (this.debugMode) {
-                        console.log(`[GetPeers] Sent random infohash query to ${potentialNode.address}:${potentialNode.port}`);
+                        console.log(`[GetPeers] Sent random ${isV2Query ? 'v2' : 'v1'} infohash query to ${node.address}:${node.port}`);
                     }
-                    break; // Just need one valid node
                 }
             }
         }
@@ -307,10 +322,22 @@ export class Spider extends EventEmitter {
         // Process all valid nodes in the batch
         for (const node of nodes) {
             if (node && node.id && node.address && isValidPort(node.port)) {
+                // Send find_node queries
                 this.findNode(Node.neighbor(node.id, this.table.id), { 
                     address: node.address, 
                     port: node.port 
                 });
+                
+                // Occasionally also send a get_peers query to this node
+                if (!this.v1Only && Math.random() < 0.05) {  // 5% chance
+                    // Always use v2 infohash for these additional queries
+                    const v2InfoHash = crypto.randomBytes(32);
+                    this.sendGetPeers(node, v2InfoHash);
+                    
+                    if (this.debugMode) {
+                        console.log(`[GetPeers] Additional v2 query to ${node.address}:${node.port}`);
+                    }
+                }
             }
         }
 
@@ -330,7 +357,8 @@ export class Spider extends EventEmitter {
             q: 'get_peers',
             a: {
                 id: this.table.id,
-                info_hash: infoHash
+                info_hash: infoHash,
+                v2: 1    // Advertise support for BEP-52 (v2 infohashes)
             }
         };
 
@@ -427,14 +455,14 @@ export class Spider extends EventEmitter {
             y: 'r',
             r: {
                 id: Node.neighbor(nid, this.table.id),
-                nodes: Node.encodeNodes(this.table.first()) // Send some nodes from our table
+                nodes: Node.encodeNodes(this.table.first()), // Send some nodes from our table
+                v2: 1  // Advertise support for BEP-52 (v2 infohashes)
             }
         }, rinfo);
     }
 
     private onGetPeersRequest(message: KRPCMessage, rinfo: RemoteInfo): void {
-         // --- Start Change: Relaxed Validation ---
-         // Basic checks - still important
+         // Basic checks
          if (!message.t || !message.a || !message.a.id || !message.a.info_hash) {
              if (this.debugMode) console.warn(`[OnGetPeersRequest] Invalid basic message structure:`, message);
              return;
@@ -444,25 +472,34 @@ export class Spider extends EventEmitter {
          let validNid = Buffer.isBuffer(message.a.id) && message.a.id.length === 20;
          if (!validNid) {
              if (this.debugMode) console.warn(`[OnGetPeersRequest] Invalid node ID format/length. ID: ${message.a.id}`);
-             // Decide if you want to proceed even with invalid ID. For now, let's return.
              return; 
          }
 
          let validInfohashBuffer = Buffer.isBuffer(message.a.info_hash);
          if (!validInfohashBuffer) {
             if (this.debugMode) console.warn(`[OnGetPeersRequest] Infohash is not a buffer. Type: ${typeof message.a.info_hash}`);
-            // Decide if you want to proceed. For now, let's return.
             return;
          }
 
          const { t: tid, a: { id: nid, info_hash: infohash } } = message;
 
-         // Check infohash validity (v1/v2 based on options) - keep this strict
-        if (!isValidInfoHash(infohash, this.v1Only)) {
-             if (this.debugMode) console.warn(`[OnGetPeersRequest] Invalid infohash received (v1Only=${this.v1Only}):`, infohash.toString('hex'));
-            return;
-        }
-        // --- End Change ---
+         // More permissive check for infohash validity - don't strictly require exact lengths
+         const infoHashLength = infohash.length;
+         let version: 1 | 2 = 1;
+         
+         if (infoHashLength === 32) {
+             version = 2;
+             this.v2Count++;
+             if (this.debugMode) {
+                 console.log(`[DEBUG] InfoHash v2 (32 bytes) requested: ${infohash.toString('hex').toUpperCase()}`);
+             }
+         } else if (infoHashLength === 20) {
+             this.v1Count++;
+         } else {
+             if (this.debugMode) console.warn(`[OnGetPeersRequest] Unusual infohash length: ${infoHashLength} bytes`);
+             // Continue anyway but classify as v1
+             this.v1Count++;
+         }
 
         this.send({
             t: tid,
@@ -470,19 +507,10 @@ export class Spider extends EventEmitter {
             r: {
                 id: Node.neighbor(nid, this.table.id),
                 nodes: Node.encodeNodes(this.table.first()),
-                token: this.token.generate() // Generate a fresh token for the response
+                token: this.token.generate(), // Generate a fresh token for the response
+                v2: 1  // Advertise support for BEP-52 (v2 infohashes)
             }
         }, rinfo);
-
-        const version = isInfoHashV2(infohash) ? 2 : 1;
-        if (version === 2) {
-            this.v2Count++;
-            if (this.debugMode) {
-                console.log(`[DEBUG] InfoHash v2 requested: ${infohash.toString('hex').toUpperCase()}`);
-            }
-        } else {
-            this.v1Count++;
-        }
 
         this.emit('unensureHash', infohash.toString('hex').toUpperCase(), version);
     }
@@ -538,7 +566,14 @@ export class Spider extends EventEmitter {
              if (this.debugMode) console.warn(`[OnPingRequest] Invalid message format:`, message);
              return;
          }
-        this.send({ t: message.t, y: 'r', r: { id: Node.neighbor(message.a.id, this.table.id) } }, rinfo);
+        this.send({ 
+            t: message.t, 
+            y: 'r', 
+            r: { 
+                id: Node.neighbor(message.a.id, this.table.id),
+                v2: 1  // Advertise support for BEP-52 (v2 infohashes)
+            } 
+        }, rinfo);
     }
 
     private parse(data: Buffer, rinfo: RemoteInfo): void {
@@ -797,7 +832,7 @@ export class Spider extends EventEmitter {
         return this.table.size();
     }
 
-    // Public method to force get_peers requests to stimulate DHT activity
+    // More aggressively try to find v2 infohashes
     forceGetPeers(): void {
         const tableSize = this.table.size();
         if (tableSize === 0) {
@@ -806,17 +841,34 @@ export class Spider extends EventEmitter {
             return;
         }
 
-        if (this.debugMode) console.log(`[ForceGetPeers] Sending get_peers to ${Math.min(5, tableSize)} random nodes`);
-        
-        // Get some nodes without removing them from the table
+        // Get nodes without removing them from the table
         const nodes = this.table.first();
+        const validNodes = nodes.filter(node => node && node.address && isValidPort(node.port));
+        
+        if (this.debugMode) {
+            console.log(`[ForceGetPeers] Found ${validNodes.length} valid nodes for queries`);
+        }
         
         // Send get_peers with random infohashes to stimulate the DHT
-        for (let i = 0; i < Math.min(5, nodes.length); i++) {
-            const node = nodes[i];
-            if (node && node.address && isValidPort(node.port)) {
-                const randomInfoHash = crypto.randomBytes(20);
+        // More aggressive approach: query more nodes with bias toward v2
+        const nodesToQuery = Math.min(20, validNodes.length);
+        
+        if (this.debugMode) {
+            console.log(`[ForceGetPeers] Sending get_peers to ${nodesToQuery} random nodes`);
+        }
+        
+        for (let i = 0; i < nodesToQuery; i++) {
+            const node = validNodes[i];
+            if (node) {
+                // Heavy bias toward v2 infohashes (80% if enabled)
+                const isV2Query = !this.v1Only && Math.random() < 0.8;
+                const randomInfoHash = isV2Query ? crypto.randomBytes(32) : crypto.randomBytes(20);
+                
                 this.sendGetPeers(node, randomInfoHash);
+                
+                if (this.debugMode) {
+                    console.log(`[ForceGetPeers] Sent ${isV2Query ? 'v2' : 'v1'} query to ${node.address}:${node.port}`);
+                }
             }
         }
     }

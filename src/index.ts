@@ -1,5 +1,11 @@
 import Spider from './spider';
 
+// Export Spider as default and named export for both ESM and CommonJS
+export default Spider;
+export { Spider };
+
+// Example usage is commented out but kept for documentation
+/*
 // Configuration (optional)
 const options = {
     udpPort: 6881,       // Port for the DHT spider to listen on
@@ -44,3 +50,5 @@ const shutdown = () => {
 
 process.on('SIGINT', shutdown);  // Catch Ctrl+C
 process.on('SIGTERM', shutdown); // Catch kill signals 
+*/
+

@@ -1,0 +1,8 @@
+src/
+sample/
+node_modules/
+.git/
+.travis.yml
+bun.lock
+tsconfig.json
+.gitignore 
